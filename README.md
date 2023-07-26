@@ -1,0 +1,1 @@
+The purpose of this repository is to store the application responsible for ingestion of real-time forex data.
