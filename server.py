@@ -2,32 +2,30 @@ import os
 import json
 import base64
 from datetime import datetime, timedelta
+from time import sleep
+from multiprocessing import Queue, Process
+import functools
+
 from pymongo import MongoClient
 import asyncio
 from websockets.server import serve
 
 
+def update_period() -> datetime:
+    now = datetime.utcnow()
+    return datetime(
+        now.year,
+        now.month,
+        now.day,
+        now.hour,
+        now.minute,
+        0,
+        0,
+    )
+
 class Producer:
-    def __init__(self) -> None:
-        now = datetime.utcnow()
-        self.next_period = datetime(
-            now.year,
-            now.month,
-            now.day,
-            now.hour,
-            now.minute,
-            0,
-            0,
-        )
-        self.current_period = datetime(
-            now.year,
-            now.month,
-            now.day,
-            now.hour,
-            now.minute,
-            0,
-            0,
-        )
+    def __init__(self, queue: Queue) -> None:
+        self.queue = queue
 
     def get_record(self, record_dt: datetime, **kwargs) -> dict:
         yesterday = record_dt - timedelta(days=1)
@@ -45,9 +43,8 @@ class Producer:
                 record = collection.find_one(
                     {"timestamp": timestamp}, {"_id": 0, "timestamp_d": 0}
                 )
-                # 1690231860000
-                # 1689638220000
-                return record
+                ret = record if record is not None else {}
+                return ret
         else:
             raise ("No mongo uri found")
 
@@ -55,41 +52,44 @@ class Producer:
         self,
     ):
         try:
-            # IMPORTANT! we need to make sure that the seconds & microseconds are 0
             while True:
-                while self.current_period < self.next_period:
-                    # wait for the next period
-                    await asyncio.sleep(10)
-                    print(
-                        f"current_period: {self.current_period}; next_period: {self.next_period}"
-                    )
-                    self.current_period = datetime(
-                        datetime.utcnow().year,
-                        datetime.utcnow().month,
-                        datetime.utcnow().day,
-                        datetime.utcnow().hour,
-                        datetime.utcnow().minute,
-                        0,
-                        0,
-                    )
-
-                record = json.dumps(self.get_record(self.next_period))
-                self.next_period = self.next_period + timedelta(minutes=1)
-                return record
+                next_period = self.queue.get()
+                if next_period:
+                    print(f"Next period: {next_period}")
+                    return json.dumps(self.get_record(next_period))
         except Exception as e:
             print(e)
 
 
-async def producer_handler(websocket):
-    producer = Producer()
-    while True:
-        message = await producer.run()
-        print(message)
-        await websocket.send(message)
+async def producer_handler(websocket, record_queue: Queue):
+    producer = Producer(record_queue)
+    message = await producer.run()
+    print(message)
+    await websocket.send(message)
 
+def watcher(queue: Queue):
+    current_period = update_period()
+    last_period = current_period - timedelta(minutes=1)
+    print(f"current_period: {current_period}")
+    print(f"last_period: {last_period}")
+
+    while True:
+        if current_period > last_period:
+            print(f"current period: {current_period}")
+            queue.put_nowait(current_period)
+            last_period = current_period
+        else:
+            print(f"waiting...")
+            sleep(30)
+            current_period = update_period()
 
 async def main():
-    async with serve(producer_handler, "localhost", 8765):
+    queue = Queue()
+    watch = Process(target=watcher, args=(queue,))
+    watch.start()
+
+    queued_producer_handeler = functools.partial(producer_handler, record_queue=queue)
+    async with serve(queued_producer_handeler, "localhost", 8765):
         await asyncio.Future()  # run forever
 
 
