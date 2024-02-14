@@ -79,8 +79,7 @@ def watcher(queue: Queue):
             queue.put_nowait(current_period)
             last_period = current_period
         else:
-            print(f"waiting...")
-            sleep(30)
+            sleep(10)
             current_period = update_period()
 
 async def main():

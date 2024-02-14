@@ -6,7 +6,8 @@ def client():
     while True:
         with connect("ws://localhost:8765") as websocket:
             message = websocket.recv()
-            print(f"Received: {message}")
+            print(message)
+            # TODO: push message to kafka
 
 
 client()
